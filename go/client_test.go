@@ -494,9 +494,11 @@ func TestUserAgentSentInRequests(t *testing.T) {
 		t.Fatalf("error creating client: %s", err)
 	}
 
-	_, _ = client.GetFeeds(context.Background())
+	_, err = client.GetFeeds(context.Background())
+	if err != nil {
+		t.Fatalf("GetFeeds() error = %v", err)
+	}
 }
-
 
 type mockServer struct {
 	server *httptest.Server

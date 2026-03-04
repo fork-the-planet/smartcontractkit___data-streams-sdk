@@ -1,4 +1,4 @@
-module github.com/smartcontractkit/data-streams-sdk/go/v2
+module github.com/smartcontractkit/data-streams-sdk/go
 
 go 1.24.0
 

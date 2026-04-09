@@ -132,8 +132,9 @@ export class Stream extends EventEmitter {
 
     this.connectionManager = new ConnectionManager(config, managerConfig);
 
-    // Initialize deduplicator for HA mode (single mode can also benefit from deduplication)
-    this.deduplicator = new ReportDeduplicator();
+    this.deduplicator = new ReportDeduplicator({
+      allowOutOfOrder: config.wsAllowOutOfOrder,
+    });
 
     // Inject StreamStats into ConnectionManager for unified metrics
     this.connectionManager.setStreamStats(this.stats);
@@ -233,6 +234,10 @@ export class Stream extends EventEmitter {
     });
 
     const originInfo = origin ? ` from ${new URL(origin).host}` : "";
+
+    if (result.isOutOfOrder) {
+      this.stats.incrementOutOfOrder();
+    }
 
     if (result.isAccepted) {
       this.stats.incrementAccepted();

@@ -175,6 +175,7 @@ type Config struct {
     WsURL string // Websocket Api url
 
     WsHA               bool                          // Use concurrent connections to multiple Streams servers
+    WsAllowOutOfOrder  bool                          // Allow out-of-order reports through while still deduplicating HA duplicates
     WsMaxReconnect     int                           // Maximum number of reconnection attempts for Stream underlying connections
     LogDebug           bool                          // Log debug information
     InsecureSkipVerify bool                          // Skip server certificate chain and host name verification
@@ -292,6 +293,7 @@ func (r *ReportResponse) UnmarshalJSON(b []byte) (err error)
 type Stats struct {
     Accepted              uint64 // Total number of accepted reports
     Deduplicated          uint64 // Total number of deduplicated reports when in HA
+    OutOfOrder            uint64 // Total number of out-of-order reports seen
     TotalReceived         uint64 // Total number of received reports
     PartialReconnects     uint64 // Total number of partial reconnects when in HA
     FullReconnects        uint64 // Total number of full reconnects

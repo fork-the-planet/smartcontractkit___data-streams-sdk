@@ -48,16 +48,41 @@ pub(crate) async fn run_stream(
                                     let feed_id = report.report.feed_id.to_hex_string();
                                     let observations_timestamp = report.report.observations_timestamp;
 
-                                    if water_mark.lock().await.contains_key(&feed_id) && water_mark.lock().await[&feed_id] >= observations_timestamp {
-                                        stats.deduplicated.fetch_add(1, Ordering::SeqCst);
-                                        continue;
+                                    let mut wm = water_mark.lock().await;
+                                    let current_wm = wm.get(&feed_id).copied();
+
+                                    if let Some(current) = current_wm {
+                                        if config.ws_allow_out_of_order {
+                                            if observations_timestamp == current {
+                                                stats.deduplicated.fetch_add(1, Ordering::SeqCst);
+                                                drop(wm);
+                                                continue;
+                                            }
+                                            if observations_timestamp < current {
+                                                stats.out_of_order.fetch_add(1, Ordering::SeqCst);
+                                            } else {
+                                                wm.insert(feed_id.clone(), observations_timestamp);
+                                            }
+                                        } else {
+                                            if observations_timestamp <= current {
+                                                stats.deduplicated.fetch_add(1, Ordering::SeqCst);
+                                                if observations_timestamp < current {
+                                                    stats.out_of_order.fetch_add(1, Ordering::SeqCst);
+                                                }
+                                                drop(wm);
+                                                continue;
+                                            }
+                                            wm.insert(feed_id.clone(), observations_timestamp);
+                                        }
+                                    } else {
+                                        wm.insert(feed_id.clone(), observations_timestamp);
                                     }
+                                    drop(wm);
 
                                     report_sender.send(report).await.map_err(|e| {
                                         StreamError::ConnectionError(format!("Failed to send report: {}", e))
                                     })?;
 
-                                    water_mark.lock().await.insert(feed_id, observations_timestamp);
                                     stats.accepted.fetch_add(1, Ordering::SeqCst);
 
                                 } else {

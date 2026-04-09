@@ -6,6 +6,7 @@ import { MetricsSnapshot, ConnectionStatus } from "../types/metrics";
 export class StreamStats {
   private _accepted = 0;
   private _deduplicated = 0;
+  private _outOfOrder = 0;
   private _partialReconnects = 0;
   private _fullReconnects = 0;
   private _configuredConnections = 0;
@@ -31,6 +32,13 @@ export class StreamStats {
   incrementDeduplicated(): void {
     this._deduplicated++;
     this._totalReceived++;
+  }
+
+  /**
+   * Increment the number of out-of-order reports seen
+   */
+  incrementOutOfOrder(): void {
+    this._outOfOrder++;
   }
 
   /**
@@ -102,6 +110,7 @@ export class StreamStats {
   reset(): void {
     this._accepted = 0;
     this._deduplicated = 0;
+    this._outOfOrder = 0;
     this._partialReconnects = 0;
     this._fullReconnects = 0;
     this._totalReceived = 0;
@@ -121,6 +130,7 @@ export class StreamStats {
     return {
       accepted: this._accepted,
       deduplicated: this._deduplicated,
+      outOfOrder: this._outOfOrder,
       partialReconnects: this._partialReconnects,
       fullReconnects: this._fullReconnects,
       configuredConnections: this._configuredConnections,

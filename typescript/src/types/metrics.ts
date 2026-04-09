@@ -51,6 +51,15 @@ export interface MetricsSnapshot {
   readonly deduplicated: number;
 
   /**
+   * Total number of out-of-order reports seen.
+   *
+   * Tracks reports received with a timestamp older than the current watermark.
+   * When wsAllowOutOfOrder is false, these reports are dropped (included in deduplicated count).
+   * When wsAllowOutOfOrder is true, these reports are delivered (included in accepted count).
+   */
+  readonly outOfOrder: number;
+
+  /**
    * Total number of reports received across all connections.
    *
    * This is the sum of accepted + deduplicated reports, representing the

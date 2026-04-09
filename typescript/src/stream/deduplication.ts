@@ -12,12 +12,14 @@ export interface ReportMetadata {
 export interface DeduplicationResult {
   isAccepted: boolean;
   isDuplicate: boolean;
+  isOutOfOrder: boolean;
   reason?: string;
 }
 
 export interface DeduplicationStats {
   accepted: number;
   deduplicated: number;
+  outOfOrder: number;
   totalReceived: number;
   watermarkCount: number;
 }
@@ -29,20 +31,24 @@ export class ReportDeduplicator {
   private waterMark: Map<string, number> = new Map();
   private acceptedCount = 0;
   private deduplicatedCount = 0;
+  private outOfOrderCount = 0;
   private cleanupInterval: NodeJS.Timeout | null = null;
 
   // Configuration
   private readonly maxWatermarkAge: number;
   private readonly cleanupIntervalMs: number;
+  private readonly allowOutOfOrder: boolean;
 
   constructor(
     options: {
       maxWatermarkAge?: number; // How long to keep watermarks (default: 1 hour)
       cleanupIntervalMs?: number; // How often to clean old watermarks (default: 5 minutes)
+      allowOutOfOrder?: boolean; // Allow out-of-order reports through (default: false)
     } = {}
   ) {
     this.maxWatermarkAge = options.maxWatermarkAge ?? 60 * 60 * 1000; // 1 hour
     this.cleanupIntervalMs = options.cleanupIntervalMs ?? 5 * 60 * 1000; // 5 minutes
+    this.allowOutOfOrder = options.allowOutOfOrder ?? false;
 
     // Start periodic cleanup
     this.startCleanup();
@@ -55,27 +61,47 @@ export class ReportDeduplicator {
     const feedId = report.feedID;
     const observationsTimestamp = report.observationsTimestamp;
 
-    // Get current watermark for this feed
     const currentWatermark = this.waterMark.get(feedId);
 
-    // Check if this report is older than or equal to the watermark
-    if (currentWatermark !== undefined && currentWatermark >= observationsTimestamp) {
-      this.deduplicatedCount++;
-      return {
-        isAccepted: false,
-        isDuplicate: true,
-        reason: `Report timestamp ${observationsTimestamp} <= watermark ${currentWatermark} for feed ${feedId}`,
-      };
+    if (currentWatermark !== undefined) {
+      if (this.allowOutOfOrder) {
+        if (observationsTimestamp === currentWatermark) {
+          this.deduplicatedCount++;
+          return {
+            isAccepted: false,
+            isDuplicate: true,
+            isOutOfOrder: false,
+            reason: `Duplicate timestamp ${observationsTimestamp} for feed ${feedId}`,
+          };
+        }
+        if (observationsTimestamp < currentWatermark) {
+          this.outOfOrderCount++;
+          this.acceptedCount++;
+          return { isAccepted: true, isDuplicate: false, isOutOfOrder: true };
+        }
+        this.waterMark.set(feedId, observationsTimestamp);
+      } else {
+        if (observationsTimestamp <= currentWatermark) {
+          this.deduplicatedCount++;
+          const isOOO = observationsTimestamp < currentWatermark;
+          if (isOOO) {
+            this.outOfOrderCount++;
+          }
+          return {
+            isAccepted: false,
+            isDuplicate: true,
+            isOutOfOrder: isOOO,
+            reason: `Report timestamp ${observationsTimestamp} <= watermark ${currentWatermark} for feed ${feedId}`,
+          };
+        }
+        this.waterMark.set(feedId, observationsTimestamp);
+      }
+    } else {
+      this.waterMark.set(feedId, observationsTimestamp);
     }
 
-    // Accept the report and update watermark
-    this.waterMark.set(feedId, observationsTimestamp);
     this.acceptedCount++;
-
-    return {
-      isAccepted: true,
-      isDuplicate: false,
-    };
+    return { isAccepted: true, isDuplicate: false, isOutOfOrder: false };
   }
 
   /**
@@ -85,6 +111,7 @@ export class ReportDeduplicator {
     return {
       accepted: this.acceptedCount,
       deduplicated: this.deduplicatedCount,
+      outOfOrder: this.outOfOrderCount,
       totalReceived: this.acceptedCount + this.deduplicatedCount,
       watermarkCount: this.waterMark.size,
     };
@@ -135,6 +162,7 @@ export class ReportDeduplicator {
   reset(): void {
     this.acceptedCount = 0;
     this.deduplicatedCount = 0;
+    this.outOfOrderCount = 0;
     this.waterMark.clear();
   }
 

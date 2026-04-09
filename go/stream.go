@@ -54,6 +54,7 @@ type Stream interface {
 type Stats struct {
 	Accepted              uint64 // Total number of accepted reports
 	Deduplicated          uint64 // Total number of deduplicated reports when in HA
+	OutOfOrder            uint64 // Total number of out-of-order reports seen
 	TotalReceived         uint64 // Total number of received reports
 	PartialReconnects     uint64 // Total number of partial reconnects when in HA
 	FullReconnects        uint64 // Total number of full reconnects
@@ -63,8 +64,8 @@ type Stats struct {
 
 func (s Stats) String() (st string) {
 	return fmt.Sprintf(
-		"accepted: %d, deduplicated: %d, total_received %d, partial_reconnects: %d, full_reconnects: %d, configured_connections: %d, active_connections %d",
-		s.Accepted, s.Deduplicated,
+		"accepted: %d, deduplicated: %d, out_of_order: %d, total_received %d, partial_reconnects: %d, full_reconnects: %d, configured_connections: %d, active_connections %d",
+		s.Accepted, s.Deduplicated, s.OutOfOrder,
 		s.TotalReceived, s.PartialReconnects,
 		s.FullReconnects, s.ConfiguredConnections, s.ActiveConnections,
 	)
@@ -88,6 +89,7 @@ type stream struct {
 	stats struct {
 		accepted              atomic.Uint64
 		skipped               atomic.Uint64
+		outOfOrder            atomic.Uint64
 		partialReconnects     atomic.Uint64
 		fullReconnects        atomic.Uint64
 		activeConnections     atomic.Uint64
@@ -310,6 +312,7 @@ func (s *stream) newWSconnWithRetry(origin string) (conn *wsConn, err error) {
 func (s *stream) Stats() (st Stats) {
 	st.Accepted = s.stats.accepted.Load()
 	st.Deduplicated = s.stats.skipped.Load()
+	st.OutOfOrder = s.stats.outOfOrder.Load()
 	st.TotalReceived = st.Accepted + st.Deduplicated
 	st.PartialReconnects = s.stats.partialReconnects.Load()
 	st.FullReconnects = s.stats.fullReconnects.Load()
@@ -359,17 +362,35 @@ func (s *stream) Close() (err error) {
 
 func (s *stream) accept(ctx context.Context, m *message) (err error) {
 	id := m.Report.FeedID.String()
+	ts := m.Report.ObservationsTimestamp
 
 	s.waterMarkMu.Lock()
-	// Skip older reports and reports with the same timestamp
-	if !m.Report.ObservationsTimestamp.After(s.waterMark[id]) {
-		s.stats.skipped.Add(1)
-		s.waterMarkMu.Unlock()
-		return nil
+	wm := s.waterMark[id]
+
+	if s.config.WsAllowOutOfOrder {
+		if ts.Equal(wm) {
+			s.stats.skipped.Add(1)
+			s.waterMarkMu.Unlock()
+			return nil
+		}
+		if ts.Before(wm) {
+			s.stats.outOfOrder.Add(1)
+		} else {
+			s.waterMark[id] = ts
+		}
+	} else {
+		if !ts.After(wm) {
+			s.stats.skipped.Add(1)
+			if ts.Before(wm) {
+				s.stats.outOfOrder.Add(1)
+			}
+			s.waterMarkMu.Unlock()
+			return nil
+		}
+		s.waterMark[id] = ts
 	}
 
 	s.stats.accepted.Add(1)
-	s.waterMark[id] = m.Report.ObservationsTimestamp
 	s.waterMarkMu.Unlock()
 
 	select {

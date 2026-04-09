@@ -57,6 +57,8 @@ struct Stats {
     accepted: AtomicUsize,
     /// Total number of deduplicated reports when in HA           
     deduplicated: AtomicUsize,
+    /// Total number of out-of-order reports seen
+    out_of_order: AtomicUsize,
     /// Total number of partial reconnects when in HA        
     partial_reconnects: AtomicUsize,
     /// Total number of full reconnects    
@@ -135,6 +137,7 @@ impl Stream {
         let stats = Arc::new(Stats {
             accepted: AtomicUsize::new(0),
             deduplicated: AtomicUsize::new(0),
+            out_of_order: AtomicUsize::new(0),
             partial_reconnects: AtomicUsize::new(0),
             full_reconnects: AtomicUsize::new(0),
             configured_connections: AtomicUsize::new(0),
@@ -257,6 +260,7 @@ impl Stream {
         StatsSnapshot {
             accepted,
             deduplicated,
+            out_of_order: self.stats.out_of_order.load(Ordering::SeqCst),
             total_received: accepted + deduplicated,
             partial_reconnects: self.stats.partial_reconnects.load(Ordering::SeqCst),
             full_reconnects: self.stats.full_reconnects.load(Ordering::SeqCst),
@@ -273,6 +277,8 @@ pub struct StatsSnapshot {
     pub accepted: usize,
     /// Total number of deduplicated reports when in HA
     pub deduplicated: usize,
+    /// Total number of out-of-order reports seen
+    pub out_of_order: usize,
     /// Total number of received reports
     pub total_received: usize,
     /// Total number of partial reconnects when in HA

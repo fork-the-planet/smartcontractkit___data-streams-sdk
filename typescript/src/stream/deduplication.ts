@@ -165,6 +165,8 @@ export class ReportDeduplicator {
   // Clean up old watermarks to keep memory usage under control.
   private cleanupOldWatermarks(): void {
     const now = Date.now();
+    // todo: this assumes that the timestamp is in seconds, introduce millisecond support when sdk is
+    // updated to handle millisecond timestamps.
     const cutoffTimestamp = Math.floor((now - this.maxWatermarkAge) / 1000);
 
     for (const [feedId, state] of this.feedState) {

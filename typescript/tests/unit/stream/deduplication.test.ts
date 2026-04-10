@@ -33,16 +33,15 @@ describe("ReportDeduplicator", () => {
         validFromTimestamp: 900,
       };
 
-      // First report should be accepted
       const result1 = deduplicator.processReport(report);
       expect(result1.isAccepted).toBe(true);
       expect(result1.isDuplicate).toBe(false);
 
-      // Duplicate should be rejected
       const result2 = deduplicator.processReport(report);
       expect(result2.isAccepted).toBe(false);
       expect(result2.isDuplicate).toBe(true);
-      expect(result2.reason).toContain("watermark");
+      expect(result2.isOutOfOrder).toBe(false);
+      expect(result2.reason).toContain("already seen");
     });
 
     it("should reject reports with older timestamps", () => {
@@ -60,14 +59,12 @@ describe("ReportDeduplicator", () => {
         validFromTimestamp: 900,
       };
 
-      // Accept newer report first
       const result1 = deduplicator.processReport(newerReport);
       expect(result1.isAccepted).toBe(true);
 
-      // Reject older report
       const result2 = deduplicator.processReport(olderReport);
       expect(result2.isAccepted).toBe(false);
-      expect(result2.isDuplicate).toBe(true);
+      expect(result2.isOutOfOrder).toBe(true);
     });
 
     it("should accept reports with newer timestamps", () => {
@@ -85,14 +82,68 @@ describe("ReportDeduplicator", () => {
         validFromTimestamp: 1900,
       };
 
-      // Accept older report first
       const result1 = deduplicator.processReport(olderReport);
       expect(result1.isAccepted).toBe(true);
 
-      // Accept newer report
       const result2 = deduplicator.processReport(newerReport);
       expect(result2.isAccepted).toBe(true);
       expect(result2.isDuplicate).toBe(false);
+    });
+  });
+
+  describe("out-of-order with allowOutOfOrder", () => {
+    it("should accept out-of-order reports when allowOutOfOrder is true", () => {
+      const dedup = new ReportDeduplicator({ allowOutOfOrder: true });
+
+      dedup.processReport({
+        feedID: "0x123",
+        observationsTimestamp: 2000,
+        fullReport: "newer",
+        validFromTimestamp: 1900,
+      });
+
+      const result = dedup.processReport({
+        feedID: "0x123",
+        observationsTimestamp: 1000,
+        fullReport: "older",
+        validFromTimestamp: 900,
+      });
+
+      expect(result.isAccepted).toBe(true);
+      expect(result.isOutOfOrder).toBe(true);
+      expect(result.isDuplicate).toBe(false);
+      dedup.stop();
+    });
+
+    it("should distinguish out-of-order from duplicate", () => {
+      const dedup = new ReportDeduplicator({ allowOutOfOrder: true });
+
+      dedup.processReport({
+        feedID: "0x123",
+        observationsTimestamp: 200,
+        fullReport: "r",
+        validFromTimestamp: 100,
+      });
+
+      const ooo = dedup.processReport({
+        feedID: "0x123",
+        observationsTimestamp: 100,
+        fullReport: "r",
+        validFromTimestamp: 50,
+      });
+      expect(ooo.isAccepted).toBe(true);
+      expect(ooo.isOutOfOrder).toBe(true);
+
+      const dup = dedup.processReport({
+        feedID: "0x123",
+        observationsTimestamp: 100,
+        fullReport: "r",
+        validFromTimestamp: 50,
+      });
+      expect(dup.isAccepted).toBe(false);
+      expect(dup.isDuplicate).toBe(true);
+      expect(dup.isOutOfOrder).toBe(false);
+      dedup.stop();
     });
   });
 
@@ -107,19 +158,17 @@ describe("ReportDeduplicator", () => {
 
       const report2: ReportMetadata = {
         feedID: "0x456",
-        observationsTimestamp: 1000, // Same timestamp, different feed
+        observationsTimestamp: 1000,
         fullReport: "report2",
         validFromTimestamp: 900,
       };
 
-      // Both should be accepted since they're for different feeds
       const result1 = deduplicator.processReport(report1);
       expect(result1.isAccepted).toBe(true);
 
       const result2 = deduplicator.processReport(report2);
       expect(result2.isAccepted).toBe(true);
 
-      // Duplicates should be rejected
       const result3 = deduplicator.processReport(report1);
       expect(result3.isAccepted).toBe(false);
 
@@ -128,36 +177,27 @@ describe("ReportDeduplicator", () => {
     });
 
     it("should track watermarks per feed independently", () => {
-      const feed1Report1: ReportMetadata = {
+      deduplicator.processReport({
         feedID: "0x123",
         observationsTimestamp: 1000,
         fullReport: "report1",
         validFromTimestamp: 900,
-      };
+      });
 
-      const feed2Report1: ReportMetadata = {
+      deduplicator.processReport({
         feedID: "0x456",
         observationsTimestamp: 2000,
         fullReport: "report2",
         validFromTimestamp: 1900,
-      };
+      });
 
-      const feed1Report2: ReportMetadata = {
+      deduplicator.processReport({
         feedID: "0x123",
         observationsTimestamp: 1500,
         fullReport: "report3",
         validFromTimestamp: 1400,
-      };
+      });
 
-      // Accept initial reports
-      deduplicator.processReport(feed1Report1);
-      deduplicator.processReport(feed2Report1);
-
-      // Accept newer report for feed1
-      const result = deduplicator.processReport(feed1Report2);
-      expect(result.isAccepted).toBe(true);
-
-      // Verify watermarks are independent
       expect(deduplicator.getWatermark("0x123")).toBe(1500);
       expect(deduplicator.getWatermark("0x456")).toBe(2000);
     });
@@ -169,114 +209,170 @@ describe("ReportDeduplicator", () => {
     });
 
     it("should update watermarks correctly", () => {
-      const report: ReportMetadata = {
+      expect(deduplicator.getWatermark("0x123")).toBeUndefined();
+
+      deduplicator.processReport({
         feedID: "0x123",
         observationsTimestamp: 1500,
         fullReport: "report",
         validFromTimestamp: 1400,
-      };
-
-      expect(deduplicator.getWatermark("0x123")).toBeUndefined();
-
-      deduplicator.processReport(report);
+      });
 
       expect(deduplicator.getWatermark("0x123")).toBe(1500);
     });
 
-    it("should not update watermark for rejected reports", () => {
-      const report1: ReportMetadata = {
+    it("should not update watermark for out-of-order reports", () => {
+      deduplicator.processReport({
         feedID: "0x123",
         observationsTimestamp: 2000,
         fullReport: "report1",
         validFromTimestamp: 1900,
-      };
-
-      const report2: ReportMetadata = {
-        feedID: "0x123",
-        observationsTimestamp: 1000, // Older
-        fullReport: "report2",
-        validFromTimestamp: 900,
-      };
-
-      // Accept newer report
-      deduplicator.processReport(report1);
+      });
       expect(deduplicator.getWatermark("0x123")).toBe(2000);
 
-      // Reject older report
-      const result = deduplicator.processReport(report2);
-      expect(result.isAccepted).toBe(false);
-      expect(deduplicator.getWatermark("0x123")).toBe(2000); // Should remain unchanged
-    });
-
-    it("should allow manual watermark setting", () => {
-      deduplicator.setWatermark("0x123", 5000);
-      expect(deduplicator.getWatermark("0x123")).toBe(5000);
-
-      const report: ReportMetadata = {
+      deduplicator.processReport({
         feedID: "0x123",
-        observationsTimestamp: 3000, // Lower than manual watermark
-        fullReport: "report",
-        validFromTimestamp: 2900,
-      };
+        observationsTimestamp: 1000,
+        fullReport: "report2",
+        validFromTimestamp: 900,
+      });
+      expect(deduplicator.getWatermark("0x123")).toBe(2000);
+    });
+  });
 
-      const result = deduplicator.processReport(report);
+  describe("FIFO eviction", () => {
+    it("should evict oldest-inserted entry when buffer is full", () => {
+      for (let i = 1; i <= 32; i++) {
+        deduplicator.processReport({
+          feedID: "0x123",
+          observationsTimestamp: i,
+          fullReport: "r",
+          validFromTimestamp: i - 1,
+        });
+      }
+
+      // ts=2 (second inserted) should still be in the buffer
+      const stillPresent = deduplicator.processReport({
+        feedID: "0x123",
+        observationsTimestamp: 2,
+        fullReport: "r",
+        validFromTimestamp: 1,
+      });
+      expect(stillPresent.isDuplicate).toBe(true);
+
+      // Adding ts=33 evicts ts=1 (oldest inserted)
+      deduplicator.processReport({
+        feedID: "0x123",
+        observationsTimestamp: 33,
+        fullReport: "r",
+        validFromTimestamp: 32,
+      });
+
+      // ts=1 was evicted, so it's no longer a duplicate
+      // (calling processReport re-inserts it, which evicts ts=3 as next oldest)
+      const evicted = deduplicator.processReport({
+        feedID: "0x123",
+        observationsTimestamp: 1,
+        fullReport: "r",
+        validFromTimestamp: 0,
+      });
+      expect(evicted.isDuplicate).toBe(false);
+    });
+
+    it("should evict by insertion order, not by smallest value", () => {
+      // Insert 100 first, then 1..31 (total 32 entries)
+      deduplicator.processReport({
+        feedID: "0x123",
+        observationsTimestamp: 100,
+        fullReport: "r",
+        validFromTimestamp: 99,
+      });
+      for (let i = 1; i <= 31; i++) {
+        deduplicator.processReport({
+          feedID: "0x123",
+          observationsTimestamp: i,
+          fullReport: "r",
+          validFromTimestamp: i - 1,
+        });
+      }
+
+      // Add 999 -> should evict 100 (oldest inserted), NOT 1 (smallest value)
+      deduplicator.processReport({
+        feedID: "0x123",
+        observationsTimestamp: 999,
+        fullReport: "r",
+        validFromTimestamp: 998,
+      });
+
+      // ts=1 should still be present
+      const smallestStillPresent = deduplicator.processReport({
+        feedID: "0x123",
+        observationsTimestamp: 1,
+        fullReport: "r",
+        validFromTimestamp: 0,
+      });
+      expect(smallestStillPresent.isDuplicate).toBe(true);
+
+      // ts=100 should have been evicted
+      const oldestEvicted = deduplicator.processReport({
+        feedID: "0x123",
+        observationsTimestamp: 100,
+        fullReport: "r",
+        validFromTimestamp: 99,
+      });
+      expect(oldestEvicted.isDuplicate).toBe(false);
+    });
+  });
+
+  describe("HA duplicate detection", () => {
+    it("should detect HA duplicate after watermark advance", () => {
+      deduplicator.processReport({
+        feedID: "0x123",
+        observationsTimestamp: 100,
+        fullReport: "r",
+        validFromTimestamp: 99,
+      });
+
+      deduplicator.processReport({
+        feedID: "0x123",
+        observationsTimestamp: 200,
+        fullReport: "r",
+        validFromTimestamp: 199,
+      });
+
+      // HA duplicate of ts=100 from second connection
+      const result = deduplicator.processReport({
+        feedID: "0x123",
+        observationsTimestamp: 100,
+        fullReport: "r",
+        validFromTimestamp: 99,
+      });
+      expect(result.isDuplicate).toBe(true);
+      expect(result.isOutOfOrder).toBe(false);
       expect(result.isAccepted).toBe(false);
-    });
-
-    it("should clear specific watermarks", () => {
-      deduplicator.setWatermark("0x123", 1000);
-      deduplicator.setWatermark("0x456", 2000);
-
-      expect(deduplicator.getWatermark("0x123")).toBe(1000);
-      expect(deduplicator.getWatermark("0x456")).toBe(2000);
-
-      const cleared = deduplicator.clearWatermark("0x123");
-      expect(cleared).toBe(true);
-      expect(deduplicator.getWatermark("0x123")).toBeUndefined();
-      expect(deduplicator.getWatermark("0x456")).toBe(2000);
-
-      const alreadyCleared = deduplicator.clearWatermark("0x123");
-      expect(alreadyCleared).toBe(false);
-    });
-
-    it("should clear all watermarks", () => {
-      deduplicator.setWatermark("0x123", 1000);
-      deduplicator.setWatermark("0x456", 2000);
-
-      deduplicator.clearAllWatermarks();
-
-      expect(deduplicator.getWatermark("0x123")).toBeUndefined();
-      expect(deduplicator.getWatermark("0x456")).toBeUndefined();
     });
   });
 
   describe("statistics tracking", () => {
     it("should track statistics correctly", () => {
-      const report1: ReportMetadata = {
+      deduplicator.processReport({
         feedID: "0x123",
         observationsTimestamp: 1000,
         fullReport: "report1",
         validFromTimestamp: 900,
-      };
-
-      const report2: ReportMetadata = {
+      });
+      deduplicator.processReport({
         feedID: "0x123",
-        observationsTimestamp: 1000, // Duplicate
+        observationsTimestamp: 1000,
         fullReport: "report2",
         validFromTimestamp: 900,
-      };
-
-      const report3: ReportMetadata = {
+      });
+      deduplicator.processReport({
         feedID: "0x456",
         observationsTimestamp: 2000,
         fullReport: "report3",
         validFromTimestamp: 1900,
-      };
-
-      // Process reports
-      deduplicator.processReport(report1); // Accepted
-      deduplicator.processReport(report2); // Deduplicated
-      deduplicator.processReport(report3); // Accepted
+      });
 
       const stats = deduplicator.getStats();
       expect(stats.accepted).toBe(2);
@@ -286,15 +382,18 @@ describe("ReportDeduplicator", () => {
     });
 
     it("should reset statistics", () => {
-      const report: ReportMetadata = {
+      deduplicator.processReport({
         feedID: "0x123",
         observationsTimestamp: 1000,
         fullReport: "report",
         validFromTimestamp: 900,
-      };
-
-      deduplicator.processReport(report);
-      deduplicator.processReport(report); // Duplicate
+      });
+      deduplicator.processReport({
+        feedID: "0x123",
+        observationsTimestamp: 1000,
+        fullReport: "report",
+        validFromTimestamp: 900,
+      });
 
       let stats = deduplicator.getStats();
       expect(stats.accepted).toBe(1);
@@ -312,28 +411,23 @@ describe("ReportDeduplicator", () => {
 
   describe("memory management", () => {
     it("should handle large numbers of feeds efficiently", () => {
-      const feedCount = 1000; // Reduced for test performance
+      const feedCount = 1000;
       const feeds: string[] = [];
 
-      // Generate many unique feed IDs
       for (let i = 0; i < feedCount; i++) {
         feeds.push(`0x${i.toString(16).padStart(64, "0")}`);
       }
 
-      // Add reports for all feeds
       feeds.forEach((feedID, index) => {
-        const report: ReportMetadata = {
+        const result = deduplicator.processReport({
           feedID,
           observationsTimestamp: index + 1000,
           fullReport: `report-${index}`,
           validFromTimestamp: index + 900,
-        };
-
-        const result = deduplicator.processReport(report);
+        });
         expect(result.isAccepted).toBe(true);
       });
 
-      // Verify all watermarks are set correctly
       feeds.forEach((feedID, index) => {
         expect(deduplicator.getWatermark(feedID)).toBe(index + 1000);
       });
@@ -341,164 +435,61 @@ describe("ReportDeduplicator", () => {
       const stats = deduplicator.getStats();
       expect(stats.watermarkCount).toBe(feedCount);
     });
-
-    it("should provide memory usage information", () => {
-      const report: ReportMetadata = {
-        feedID: "0x123",
-        observationsTimestamp: 1000,
-        fullReport: "report",
-        validFromTimestamp: 900,
-      };
-
-      deduplicator.processReport(report);
-
-      const memoryInfo = deduplicator.getMemoryInfo();
-      expect(memoryInfo.watermarkCount).toBe(1);
-      expect(memoryInfo.estimatedMemoryBytes).toBeGreaterThan(0);
-    });
   });
 
   describe("edge cases", () => {
     it("should handle zero timestamp", () => {
-      const report: ReportMetadata = {
+      const result = deduplicator.processReport({
         feedID: "0x123",
         observationsTimestamp: 0,
         fullReport: "report",
         validFromTimestamp: 0,
-      };
-
-      const result = deduplicator.processReport(report);
+      });
       expect(result.isAccepted).toBe(true);
       expect(deduplicator.getWatermark("0x123")).toBe(0);
 
-      // Should reject duplicate with same zero timestamp
-      const result2 = deduplicator.processReport(report);
+      const result2 = deduplicator.processReport({
+        feedID: "0x123",
+        observationsTimestamp: 0,
+        fullReport: "report",
+        validFromTimestamp: 0,
+      });
       expect(result2.isAccepted).toBe(false);
     });
 
     it("should handle very large timestamps", () => {
       const largeTimestamp = Number.MAX_SAFE_INTEGER;
-      const report: ReportMetadata = {
+      const result = deduplicator.processReport({
         feedID: "0x123",
         observationsTimestamp: largeTimestamp,
         fullReport: "report",
         validFromTimestamp: largeTimestamp - 1,
-      };
-
-      const result = deduplicator.processReport(report);
+      });
       expect(result.isAccepted).toBe(true);
       expect(deduplicator.getWatermark("0x123")).toBe(largeTimestamp);
     });
 
     it("should handle empty feed ID", () => {
-      const report: ReportMetadata = {
+      const result = deduplicator.processReport({
         feedID: "",
         observationsTimestamp: 1000,
         fullReport: "report",
         validFromTimestamp: 900,
-      };
-
-      const result = deduplicator.processReport(report);
+      });
       expect(result.isAccepted).toBe(true);
       expect(deduplicator.getWatermark("")).toBe(1000);
     });
 
     it("should handle special characters in feed ID", () => {
       const specialFeedId = "0x!@#$%^&*()_+-=[]{}|;:,.<>?";
-      const report: ReportMetadata = {
+      const result = deduplicator.processReport({
         feedID: specialFeedId,
         observationsTimestamp: 1000,
         fullReport: "report",
         validFromTimestamp: 900,
-      };
-
-      const result = deduplicator.processReport(report);
+      });
       expect(result.isAccepted).toBe(true);
       expect(deduplicator.getWatermark(specialFeedId)).toBe(1000);
-    });
-  });
-
-  describe("export/import functionality", () => {
-    it("should export watermarks correctly", () => {
-      const reports = [
-        {
-          feedID: "0x123",
-          observationsTimestamp: 1000,
-          fullReport: "report1",
-          validFromTimestamp: 900,
-        },
-        {
-          feedID: "0x456",
-          observationsTimestamp: 2000,
-          fullReport: "report2",
-          validFromTimestamp: 1900,
-        },
-      ];
-
-      reports.forEach(report => {
-        deduplicator.processReport(report as ReportMetadata);
-      });
-
-      const exported = deduplicator.exportWatermarks();
-      expect(exported).toHaveLength(2);
-      expect(exported).toContainEqual({ feedId: "0x123", timestamp: 1000 });
-      expect(exported).toContainEqual({ feedId: "0x456", timestamp: 2000 });
-    });
-
-    it("should import watermarks correctly", () => {
-      const watermarks = [
-        { feedId: "0x123", timestamp: 1500 },
-        { feedId: "0x456", timestamp: 2500 },
-        { feedId: "0x789", timestamp: 3500 },
-      ];
-
-      deduplicator.importWatermarks(watermarks);
-
-      expect(deduplicator.getWatermark("0x123")).toBe(1500);
-      expect(deduplicator.getWatermark("0x456")).toBe(2500);
-      expect(deduplicator.getWatermark("0x789")).toBe(3500);
-
-      const stats = deduplicator.getStats();
-      expect(stats.watermarkCount).toBe(3);
-    });
-
-    it("should handle empty export", () => {
-      const exported = deduplicator.exportWatermarks();
-      expect(exported).toEqual([]);
-    });
-
-    it("should handle empty import", () => {
-      deduplicator.importWatermarks([]);
-      const stats = deduplicator.getStats();
-      expect(stats.watermarkCount).toBe(0);
-    });
-
-    it("should overwrite existing watermarks on import", () => {
-      // Set initial watermark
-      deduplicator.setWatermark("0x123", 1000);
-      expect(deduplicator.getWatermark("0x123")).toBe(1000);
-
-      // Import should overwrite
-      deduplicator.importWatermarks([{ feedId: "0x123", timestamp: 2000 }]);
-      expect(deduplicator.getWatermark("0x123")).toBe(2000);
-    });
-  });
-
-  describe("watermark access", () => {
-    it("should get all watermarks", () => {
-      deduplicator.setWatermark("0x123", 1000);
-      deduplicator.setWatermark("0x456", 2000);
-
-      const allWatermarks = deduplicator.getAllWatermarks();
-      expect(allWatermarks).toEqual({
-        "0x123": 1000,
-        "0x456": 2000,
-      });
-    });
-
-    it("should return empty object when no watermarks exist", () => {
-      const allWatermarks = deduplicator.getAllWatermarks();
-      expect(allWatermarks).toEqual({});
     });
   });
 

@@ -83,8 +83,8 @@ type stream struct {
 	closeError         atomic.Value
 	connStatusCallback func(isConneccted bool, host string, origin string)
 
-	waterMarkMu sync.Mutex
-	waterMark   map[string]time.Time
+	feedsMu sync.Mutex
+	dedup   *FeedDeduplicator
 
 	stats struct {
 		accepted              atomic.Uint64
@@ -109,7 +109,7 @@ func (c *client) newStream(ctx context.Context, httpClient *http.Client, feedIDs
 		config:             c.config,
 		output:             make(chan *ReportResponse, 1),
 		feedIDs:            feedIDs,
-		waterMark:          make(map[string]time.Time),
+		dedup:              NewFeedDeduplicator(),
 		streamCtx:          streamCtx,
 		streamCtxCancel:    streamCtxCancel,
 	}
@@ -362,36 +362,25 @@ func (s *stream) Close() (err error) {
 
 func (s *stream) accept(ctx context.Context, m *message) (err error) {
 	id := m.Report.FeedID.String()
-	ts := m.Report.ObservationsTimestamp
+	ts := m.Report.ObservationsTimestamp.UnixMilli()
 
-	s.waterMarkMu.Lock()
-	wm := s.waterMark[id]
+	s.feedsMu.Lock()
+	verdict := s.dedup.Check(id, ts)
+	s.feedsMu.Unlock()
 
-	if s.config.WsAllowOutOfOrder {
-		if ts.Equal(wm) {
+	switch verdict {
+	case Duplicate:
+		s.stats.skipped.Add(1)
+		return nil
+	case OutOfOrder:
+		s.stats.outOfOrder.Add(1)
+		if !s.config.WsAllowOutOfOrder {
 			s.stats.skipped.Add(1)
-			s.waterMarkMu.Unlock()
 			return nil
 		}
-		if ts.Before(wm) {
-			s.stats.outOfOrder.Add(1)
-		} else {
-			s.waterMark[id] = ts
-		}
-	} else {
-		if !ts.After(wm) {
-			s.stats.skipped.Add(1)
-			if ts.Before(wm) {
-				s.stats.outOfOrder.Add(1)
-			}
-			s.waterMarkMu.Unlock()
-			return nil
-		}
-		s.waterMark[id] = ts
 	}
 
 	s.stats.accepted.Add(1)
-	s.waterMarkMu.Unlock()
 
 	select {
 	case <-ctx.Done():

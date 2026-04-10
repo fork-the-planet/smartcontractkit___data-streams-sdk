@@ -1,6 +1,11 @@
 /**
- * Report deduplication using watermark timestamps
+ * Report deduplication using a bounded set of recently seen timestamps per feed.
+ * Each feed tracks a watermark (highest timestamp) for ordering decisions and a
+ * set of recently seen timestamps for deduplication, allowing correct dedup of
+ * both in-order and out-of-order HA duplicates.
  */
+
+const SEEN_BUFFER_SIZE = 32;
 
 export interface ReportMetadata {
   feedID: string;
@@ -24,11 +29,20 @@ export interface DeduplicationStats {
   watermarkCount: number;
 }
 
-/**
- * Manages report deduplication using watermark timestamps
- */
+enum Verdict {
+  Accept,
+  Duplicate,
+  OutOfOrder,
+}
+
+interface FeedState {
+  watermark: number;
+  seen: Set<number>;
+}
+
+// ReportDeduplicator manages deduplication of reports for a set of feeds.
 export class ReportDeduplicator {
-  private waterMark: Map<string, number> = new Map();
+  private feedState: Map<string, FeedState> = new Map();
   private acceptedCount = 0;
   private deduplicatedCount = 0;
   private outOfOrderCount = 0;
@@ -54,193 +68,116 @@ export class ReportDeduplicator {
     this.startCleanup();
   }
 
-  /**
-   * Process a report and determine if it should be accepted or deduplicated
-   */
-  processReport(report: ReportMetadata): DeduplicationResult {
-    const feedId = report.feedID;
-    const observationsTimestamp = report.observationsTimestamp;
-
-    const currentWatermark = this.waterMark.get(feedId);
-
-    if (currentWatermark !== undefined) {
-      if (this.allowOutOfOrder) {
-        if (observationsTimestamp === currentWatermark) {
-          this.deduplicatedCount++;
-          return {
-            isAccepted: false,
-            isDuplicate: true,
-            isOutOfOrder: false,
-            reason: `Duplicate timestamp ${observationsTimestamp} for feed ${feedId}`,
-          };
-        }
-        if (observationsTimestamp < currentWatermark) {
-          this.outOfOrderCount++;
-          this.acceptedCount++;
-          return { isAccepted: true, isDuplicate: false, isOutOfOrder: true };
-        }
-        this.waterMark.set(feedId, observationsTimestamp);
-      } else {
-        if (observationsTimestamp <= currentWatermark) {
-          this.deduplicatedCount++;
-          const isOOO = observationsTimestamp < currentWatermark;
-          if (isOOO) {
-            this.outOfOrderCount++;
-          }
-          return {
-            isAccepted: false,
-            isDuplicate: true,
-            isOutOfOrder: isOOO,
-            reason: `Report timestamp ${observationsTimestamp} <= watermark ${currentWatermark} for feed ${feedId}`,
-          };
-        }
-        this.waterMark.set(feedId, observationsTimestamp);
-      }
-    } else {
-      this.waterMark.set(feedId, observationsTimestamp);
+  private check(feedId: string, ts: number): Verdict {
+    let state = this.feedState.get(feedId);
+    if (!state) {
+      state = { watermark: 0, seen: new Set() };
+      this.feedState.set(feedId, state);
     }
 
-    this.acceptedCount++;
-    return { isAccepted: true, isDuplicate: false, isOutOfOrder: false };
+    if (state.seen.has(ts)) {
+      return Verdict.Duplicate;
+    }
+
+    if (state.seen.size >= SEEN_BUFFER_SIZE) {
+      const oldest = state.seen.values().next().value!;
+      state.seen.delete(oldest);
+    }
+    state.seen.add(ts);
+
+    const isOutOfOrder = state.watermark > 0 && ts < state.watermark;
+    if (ts > state.watermark) {
+      state.watermark = ts;
+    }
+
+    if (isOutOfOrder) {
+      return Verdict.OutOfOrder;
+    }
+    return Verdict.Accept;
   }
 
-  /**
-   * Get current deduplication statistics
-   */
+  // Process a report and return a verdict on whether it is accepted, duplicated, or out-of-order.
+  processReport(report: ReportMetadata): DeduplicationResult {
+    const feedId = report.feedID;
+    const ts = report.observationsTimestamp;
+    const verdict = this.check(feedId, ts);
+
+    switch (verdict) {
+      case Verdict.Duplicate:
+        this.deduplicatedCount++;
+        return {
+          isAccepted: false,
+          isDuplicate: true,
+          isOutOfOrder: false,
+          reason: `Duplicate timestamp ${ts} already seen for feed ${feedId}`,
+        };
+
+      case Verdict.OutOfOrder: {
+        this.outOfOrderCount++;
+        if (!this.allowOutOfOrder) {
+          this.deduplicatedCount++;
+          return {
+            isAccepted: false,
+            isDuplicate: false,
+            isOutOfOrder: true,
+            reason: `Out-of-order timestamp ${ts} < watermark ${this.feedState.get(feedId)!.watermark} for feed ${feedId}`,
+          };
+        }
+        this.acceptedCount++;
+        return { isAccepted: true, isDuplicate: false, isOutOfOrder: true };
+      }
+
+      case Verdict.Accept:
+        this.acceptedCount++;
+        return { isAccepted: true, isDuplicate: false, isOutOfOrder: false };
+    }
+  }
+
+  // Get statistics on deduplication performance.
   getStats(): DeduplicationStats {
     return {
       accepted: this.acceptedCount,
       deduplicated: this.deduplicatedCount,
       outOfOrder: this.outOfOrderCount,
       totalReceived: this.acceptedCount + this.deduplicatedCount,
-      watermarkCount: this.waterMark.size,
+      watermarkCount: this.feedState.size,
     };
   }
 
-  /**
-   * Get watermark for a specific feed ID
-   */
+  // Get the watermark for a feed.
   getWatermark(feedId: string): number | undefined {
-    return this.waterMark.get(feedId);
+    return this.feedState.get(feedId)?.watermark;
   }
 
-  /**
-   * Get all current watermarks (for debugging/monitoring)
-   */
-  getAllWatermarks(): Record<string, number> {
-    const watermarks: Record<string, number> = {};
-    for (const [feedId, timestamp] of this.waterMark) {
-      watermarks[feedId] = timestamp;
-    }
-    return watermarks;
-  }
-
-  /**
-   * Manually set watermark for a feed (useful for initialization)
-   */
-  setWatermark(feedId: string, timestamp: number): void {
-    this.waterMark.set(feedId, timestamp);
-  }
-
-  /**
-   * Clear watermark for a specific feed
-   */
-  clearWatermark(feedId: string): boolean {
-    return this.waterMark.delete(feedId);
-  }
-
-  /**
-   * Clear all watermarks
-   */
-  clearAllWatermarks(): void {
-    this.waterMark.clear();
-  }
-
-  /**
-   * Reset all counters and watermarks
-   */
   reset(): void {
     this.acceptedCount = 0;
     this.deduplicatedCount = 0;
     this.outOfOrderCount = 0;
-    this.waterMark.clear();
+    this.feedState.clear();
   }
 
-  /**
-   * Start periodic cleanup of old watermarks
-   * This prevents memory leaks for feeds that are no longer active
-   */
   private startCleanup(): void {
     this.cleanupInterval = setInterval(() => {
       this.cleanupOldWatermarks();
     }, this.cleanupIntervalMs);
   }
 
-  /**
-   * Clean up watermarks that are too old
-   * This is a safety mechanism to prevent unbounded memory growth
-   */
+  // Clean up old watermarks to keep memory usage under control.
   private cleanupOldWatermarks(): void {
     const now = Date.now();
-    const cutoffTime = now - this.maxWatermarkAge;
+    const cutoffTimestamp = Math.floor((now - this.maxWatermarkAge) / 1000);
 
-    // Convert cutoff time to seconds (like the timestamps in reports)
-    const cutoffTimestamp = Math.floor(cutoffTime / 1000);
-
-    let _removedCount = 0;
-    for (const [feedId, timestamp] of this.waterMark) {
-      if (timestamp < cutoffTimestamp) {
-        this.waterMark.delete(feedId);
-        _removedCount++;
+    for (const [feedId, state] of this.feedState) {
+      if (state.watermark < cutoffTimestamp) {
+        this.feedState.delete(feedId);
       }
     }
   }
 
-  /**
-   * Stop the deduplicator and clean up resources
-   */
   stop(): void {
     if (this.cleanupInterval) {
       clearInterval(this.cleanupInterval);
       this.cleanupInterval = null;
-    }
-  }
-
-  /**
-   * Get memory usage information
-   */
-  getMemoryInfo(): {
-    watermarkCount: number;
-    estimatedMemoryBytes: number;
-  } {
-    const watermarkCount = this.waterMark.size;
-
-    // Rough estimation: each entry has a string key (~64 chars) + number value
-    // String: ~64 bytes (feed ID) + Number: 8 bytes + Map overhead: ~32 bytes
-    const estimatedMemoryBytes = watermarkCount * (64 + 8 + 32);
-
-    return {
-      watermarkCount,
-      estimatedMemoryBytes,
-    };
-  }
-
-  /**
-   * Export watermarks for persistence/debugging
-   */
-  exportWatermarks(): Array<{ feedId: string; timestamp: number }> {
-    return Array.from(this.waterMark.entries()).map(([feedId, timestamp]) => ({
-      feedId,
-      timestamp,
-    }));
-  }
-
-  /**
-   * Import watermarks from external source
-   */
-  importWatermarks(watermarks: Array<{ feedId: string; timestamp: number }>): void {
-    for (const { feedId, timestamp } of watermarks) {
-      this.waterMark.set(feedId, timestamp);
     }
   }
 }

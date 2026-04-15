@@ -1,5 +1,7 @@
 package streams
 
+import "sync"
+
 const seenBufferSize = 32
 
 type Verdict int
@@ -19,6 +21,7 @@ type feedState struct {
 }
 
 type FeedDeduplicator struct {
+	mu    sync.Mutex
 	feeds map[string]*feedState
 }
 
@@ -27,6 +30,9 @@ func NewFeedDeduplicator() *FeedDeduplicator {
 }
 
 func (d *FeedDeduplicator) Check(feedID string, ts int64) Verdict {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
 	fs := d.feeds[feedID]
 	if fs == nil {
 		fs = &feedState{set: make(map[int64]struct{}, seenBufferSize)}
@@ -48,12 +54,13 @@ func (d *FeedDeduplicator) Check(feedID string, ts int64) Verdict {
 	fs.cursor = (fs.cursor + 1) % seenBufferSize
 
 	isOutOfOrder := fs.watermark > 0 && ts < fs.watermark
+	if isOutOfOrder {
+		return OutOfOrder
+	}
+	
 	if ts > fs.watermark {
 		fs.watermark = ts
 	}
 
-	if isOutOfOrder {
-		return OutOfOrder
-	}
 	return Accept
 }

@@ -83,8 +83,7 @@ type stream struct {
 	closeError         atomic.Value
 	connStatusCallback func(isConneccted bool, host string, origin string)
 
-	feedsMu sync.Mutex
-	dedup   *FeedDeduplicator
+	dedup *FeedDeduplicator
 
 	stats struct {
 		accepted              atomic.Uint64
@@ -368,9 +367,7 @@ func (s *stream) accept(ctx context.Context, m *message) (err error) {
 	id := m.Report.FeedID.String()
 	ts := m.Report.ObservationsTimestamp.UnixMilli()
 
-	s.feedsMu.Lock()
 	verdict := s.dedup.Check(id, ts)
-	s.feedsMu.Unlock()
 
 	switch verdict {
 	case Duplicate:

@@ -61,15 +61,15 @@ impl FeedDeduplicator {
         fs.cursor = (fs.cursor + 1) % SEEN_BUFFER_SIZE;
 
         let is_out_of_order = fs.watermark > 0 && ts < fs.watermark;
+        if is_out_of_order {
+            return Verdict::OutOfOrder
+        }
+
         if ts > fs.watermark {
             fs.watermark = ts;
         }
-
-        if is_out_of_order {
-            Verdict::OutOfOrder
-        } else {
-            Verdict::Accept
-        }
+        
+        return Verdict::Accept;
     }
 }
 

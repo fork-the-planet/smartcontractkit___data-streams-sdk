@@ -86,13 +86,14 @@ export class ReportDeduplicator {
     state.seen.add(ts);
 
     const isOutOfOrder = state.watermark > 0 && ts < state.watermark;
-    if (ts > state.watermark) {
-      state.watermark = ts;
-    }
-
     if (isOutOfOrder) {
       return Verdict.OutOfOrder;
     }
+
+    if (ts > state.watermark) {
+      state.watermark = ts;
+    }
+    
     return Verdict.Accept;
   }
 

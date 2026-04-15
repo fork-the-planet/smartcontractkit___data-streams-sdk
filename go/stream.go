@@ -361,6 +361,10 @@ func (s *stream) Close() (err error) {
 }
 
 func (s *stream) accept(ctx context.Context, m *message) (err error) {
+	if m.Report == nil {
+		return nil
+	}
+
 	id := m.Report.FeedID.String()
 	ts := m.Report.ObservationsTimestamp.UnixMilli()
 

@@ -51,6 +51,9 @@ pub struct Config {
     /// High Availability Mode: Use concurrent connections to multiple Streams servers
     pub ws_ha: WebSocketHighAvailability,
 
+    /// Allow out-of-order reports through while still deduplicating HA duplicates
+    pub ws_allow_out_of_order: bool,
+
     /// Maximum number of reconnection attempts for underlying WebSocket connections
     pub ws_max_reconnect: usize,
 
@@ -65,6 +68,7 @@ pub struct Config {
 impl Config {
     const DEFAULT_WS_MAX_RECONNECT: usize = 5;
     const DEFAULT_WS_HA: WebSocketHighAvailability = WebSocketHighAvailability::Disabled;
+    const DEFAULT_WS_ALLOW_OUT_OF_ORDER: bool = false;
     const DEFAULT_INSECURE_SKIP_VERIFY: InsecureSkipVerify = InsecureSkipVerify::Disabled;
     const DEFAULT_INSPECT_HTTP_RESPONSE: Option<fn(&Response)> = None;
 
@@ -140,6 +144,7 @@ impl Config {
             rest_url,
             ws_url,
             ws_ha: Self::DEFAULT_WS_HA,
+            ws_allow_out_of_order: Self::DEFAULT_WS_ALLOW_OUT_OF_ORDER,
             ws_max_reconnect: Self::DEFAULT_WS_MAX_RECONNECT,
             insecure_skip_verify: Self::DEFAULT_INSECURE_SKIP_VERIFY,
             inspect_http_response: Self::DEFAULT_INSPECT_HTTP_RESPONSE,
@@ -160,6 +165,7 @@ pub struct ConfigBuilder {
     rest_url: String,
     ws_url: String,
     ws_ha: WebSocketHighAvailability,
+    ws_allow_out_of_order: bool,
     ws_max_reconnect: usize,
     insecure_skip_verify: InsecureSkipVerify,
     inspect_http_response: Option<fn(&Response)>,
@@ -169,6 +175,12 @@ impl ConfigBuilder {
     /// Sets the `ws_ha` parameter.
     pub fn with_ws_ha(mut self, ws_ha: WebSocketHighAvailability) -> Self {
         self.ws_ha = ws_ha;
+        self
+    }
+
+    /// Sets the `ws_allow_out_of_order` parameter.
+    pub fn with_ws_allow_out_of_order(mut self, ws_allow_out_of_order: bool) -> Self {
+        self.ws_allow_out_of_order = ws_allow_out_of_order;
         self
     }
 
@@ -206,6 +218,7 @@ impl ConfigBuilder {
             rest_url: self.rest_url,
             ws_url: self.ws_url,
             ws_ha: self.ws_ha,
+            ws_allow_out_of_order: self.ws_allow_out_of_order,
             ws_max_reconnect: self.ws_max_reconnect,
             insecure_skip_verify: self.insecure_skip_verify,
             inspect_http_response: self.inspect_http_response,

@@ -801,6 +801,314 @@ func TestClient_StreamHA_OneOriginDown(t *testing.T) {
 
 }
 
+func TestClient_StreamOutOfOrder(t *testing.T) {
+	reports := []*ReportResponse{
+		{FeedID: feed1, ObservationsTimestamp: time.Unix(100, 0)},
+		{FeedID: feed1, ObservationsTimestamp: time.Unix(102, 0)},
+		{FeedID: feed1, ObservationsTimestamp: time.Unix(101, 0)}, // out-of-order
+	}
+
+	ms := newMockServer(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead {
+			return
+		}
+
+		conn, err := websocket.Accept(
+			w, r, &websocket.AcceptOptions{CompressionMode: websocket.CompressionContextTakeover},
+		)
+		if err != nil {
+			t.Fatalf("error accepting connection: %s", err)
+		}
+		defer func() { _ = conn.CloseNow() }()
+
+		for _, rpt := range reports {
+			b, err := json.Marshal(&message{rpt})
+			if err != nil {
+				t.Errorf("failed to serialize message: %s", err)
+			}
+			if err := conn.Write(context.Background(), websocket.MessageBinary, b); err != nil {
+				t.Errorf("failed to write message: %s", err)
+			}
+		}
+
+		for conn.Ping(context.Background()) == nil {
+			time.Sleep(100 * time.Millisecond)
+		}
+	})
+	defer ms.Close()
+
+	streamsClient, err := ms.Client()
+	if err != nil {
+		t.Fatalf("error creating client %s", err)
+	}
+
+	cc := streamsClient.(*client)
+	cc.config.Logger = LogPrintf
+	cc.config.LogDebug = true
+	cc.config.WsAllowOutOfOrder = true
+
+	sub, err := streamsClient.Stream(context.Background(), []feed.ID{feed1})
+	if err != nil {
+		t.Fatalf("error subscribing %s", err)
+	}
+	defer sub.Close()
+
+	var received []*ReportResponse
+	for i := 0; i < len(reports); i++ {
+		rep, err := sub.Read(context.Background())
+		if err != nil {
+			t.Fatalf("error reading report %s", err)
+		}
+		received = append(received, rep)
+	}
+
+	if !reportResponsesEqual(received, reports) {
+		t.Errorf("Read() = %v, want %v", received, reports)
+	}
+
+	stats := sub.Stats()
+	if stats.Accepted != 3 {
+		t.Errorf("stats.Accepted = %d, want 3", stats.Accepted)
+	}
+	if stats.OutOfOrder != 1 {
+		t.Errorf("stats.OutOfOrder = %d, want 1", stats.OutOfOrder)
+	}
+	if stats.Deduplicated != 0 {
+		t.Errorf("stats.Deduplicated = %d, want 0", stats.Deduplicated)
+	}
+}
+
+func TestClient_StreamOutOfOrder_DefaultDrop(t *testing.T) {
+	reports := []*ReportResponse{
+		{FeedID: feed1, ObservationsTimestamp: time.Unix(100, 0)},
+		{FeedID: feed1, ObservationsTimestamp: time.Unix(102, 0)},
+		{FeedID: feed1, ObservationsTimestamp: time.Unix(101, 0)}, // out-of-order, should be dropped
+	}
+
+	ms := newMockServer(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead {
+			return
+		}
+
+		conn, err := websocket.Accept(
+			w, r, &websocket.AcceptOptions{CompressionMode: websocket.CompressionContextTakeover},
+		)
+		if err != nil {
+			t.Fatalf("error accepting connection: %s", err)
+		}
+		defer func() { _ = conn.CloseNow() }()
+
+		for _, rpt := range reports {
+			b, err := json.Marshal(&message{rpt})
+			if err != nil {
+				t.Errorf("failed to serialize message: %s", err)
+			}
+			if err := conn.Write(context.Background(), websocket.MessageBinary, b); err != nil {
+				t.Errorf("failed to write message: %s", err)
+			}
+		}
+
+		for conn.Ping(context.Background()) == nil {
+			time.Sleep(100 * time.Millisecond)
+		}
+	})
+	defer ms.Close()
+
+	streamsClient, err := ms.Client()
+	if err != nil {
+		t.Fatalf("error creating client %s", err)
+	}
+
+	cc := streamsClient.(*client)
+	cc.config.Logger = LogPrintf
+	cc.config.LogDebug = true
+
+	sub, err := streamsClient.Stream(context.Background(), []feed.ID{feed1})
+	if err != nil {
+		t.Fatalf("error subscribing %s", err)
+	}
+	defer sub.Close()
+
+	var received []*ReportResponse
+	for i := 0; i < 2; i++ {
+		rep, err := sub.Read(context.Background())
+		if err != nil {
+			t.Fatalf("error reading report %s", err)
+		}
+		received = append(received, rep)
+	}
+
+	// Wait for the third message to be processed by accept (it should be dropped)
+	time.Sleep(50 * time.Millisecond)
+
+	expectedDelivered := reports[:2]
+	if !reportResponsesEqual(received, expectedDelivered) {
+		t.Errorf("Read() = %v, want %v", received, expectedDelivered)
+	}
+
+	stats := sub.Stats()
+	if stats.Accepted != 2 {
+		t.Errorf("stats.Accepted = %d, want 2", stats.Accepted)
+	}
+	if stats.Deduplicated != 1 {
+		t.Errorf("stats.Deduplicated = %d, want 1", stats.Deduplicated)
+	}
+	if stats.OutOfOrder != 1 {
+		t.Errorf("stats.OutOfOrder = %d, want 1", stats.OutOfOrder)
+	}
+}
+
+func TestClient_StreamDuplicateAlwaysDropped(t *testing.T) {
+	// Exact timestamp duplicates must be dropped regardless of WsAllowOutOfOrder.
+	reports := []*ReportResponse{
+		{FeedID: feed1, ObservationsTimestamp: time.Unix(100, 0)},
+		{FeedID: feed1, ObservationsTimestamp: time.Unix(100, 0)}, // exact duplicate
+	}
+
+	ms := newMockServer(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead {
+			return
+		}
+
+		conn, err := websocket.Accept(
+			w, r, &websocket.AcceptOptions{CompressionMode: websocket.CompressionContextTakeover},
+		)
+		if err != nil {
+			t.Fatalf("error accepting connection: %s", err)
+		}
+		defer func() { _ = conn.CloseNow() }()
+
+		for _, rpt := range reports {
+			b, err := json.Marshal(&message{rpt})
+			if err != nil {
+				t.Errorf("failed to serialize message: %s", err)
+			}
+			if err := conn.Write(context.Background(), websocket.MessageBinary, b); err != nil {
+				t.Errorf("failed to write message: %s", err)
+			}
+		}
+
+		for conn.Ping(context.Background()) == nil {
+			time.Sleep(100 * time.Millisecond)
+		}
+	})
+	defer ms.Close()
+
+	streamsClient, err := ms.Client()
+	if err != nil {
+		t.Fatalf("error creating client %s", err)
+	}
+
+	cc := streamsClient.(*client)
+	cc.config.WsAllowOutOfOrder = true // duplicate must still be dropped even with flag set
+
+	sub, err := streamsClient.Stream(context.Background(), []feed.ID{feed1})
+	if err != nil {
+		t.Fatalf("error subscribing %s", err)
+	}
+	defer sub.Close()
+
+	rep, err := sub.Read(context.Background())
+	if err != nil {
+		t.Fatalf("error reading report %s", err)
+	}
+	if !rep.ObservationsTimestamp.Equal(time.Unix(100, 0)) {
+		t.Errorf("unexpected report timestamp: %v", rep.ObservationsTimestamp)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	stats := sub.Stats()
+	if stats.Accepted != 1 {
+		t.Errorf("stats.Accepted = %d, want 1", stats.Accepted)
+	}
+	if stats.Deduplicated != 1 {
+		t.Errorf("stats.Deduplicated = %d, want 1", stats.Deduplicated)
+	}
+	if stats.OutOfOrder != 0 {
+		t.Errorf("stats.OutOfOrder = %d, want 0", stats.OutOfOrder)
+	}
+}
+
+func TestClient_StreamMultipleOutOfOrder_Allowed(t *testing.T) {
+	// With WsAllowOutOfOrder=true, every report is delivered even when several
+	// arrive out of order after the watermark advances.
+	reports := []*ReportResponse{
+		{FeedID: feed1, ObservationsTimestamp: time.Unix(100, 0)},
+		{FeedID: feed1, ObservationsTimestamp: time.Unix(105, 0)}, // advances watermark to 105
+		{FeedID: feed1, ObservationsTimestamp: time.Unix(103, 0)}, // OOO
+		{FeedID: feed1, ObservationsTimestamp: time.Unix(102, 0)}, // OOO
+		{FeedID: feed1, ObservationsTimestamp: time.Unix(104, 0)}, // OOO
+	}
+
+	ms := newMockServer(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead {
+			return
+		}
+
+		conn, err := websocket.Accept(
+			w, r, &websocket.AcceptOptions{CompressionMode: websocket.CompressionContextTakeover},
+		)
+		if err != nil {
+			t.Fatalf("error accepting connection: %s", err)
+		}
+		defer func() { _ = conn.CloseNow() }()
+
+		for _, rpt := range reports {
+			b, err := json.Marshal(&message{rpt})
+			if err != nil {
+				t.Errorf("failed to serialize message: %s", err)
+			}
+			if err := conn.Write(context.Background(), websocket.MessageBinary, b); err != nil {
+				t.Errorf("failed to write message: %s", err)
+			}
+		}
+
+		for conn.Ping(context.Background()) == nil {
+			time.Sleep(100 * time.Millisecond)
+		}
+	})
+	defer ms.Close()
+
+	streamsClient, err := ms.Client()
+	if err != nil {
+		t.Fatalf("error creating client %s", err)
+	}
+
+	cc := streamsClient.(*client)
+	cc.config.WsAllowOutOfOrder = true
+
+	sub, err := streamsClient.Stream(context.Background(), []feed.ID{feed1})
+	if err != nil {
+		t.Fatalf("error subscribing %s", err)
+	}
+	defer sub.Close()
+
+	var received []*ReportResponse
+	for i := 0; i < len(reports); i++ {
+		rep, err := sub.Read(context.Background())
+		if err != nil {
+			t.Fatalf("error reading report %s", err)
+		}
+		received = append(received, rep)
+	}
+
+	if !reportResponsesEqual(received, reports) {
+		t.Errorf("Read() = %v, want %v", received, reports)
+	}
+
+	stats := sub.Stats()
+	if stats.Accepted != 5 {
+		t.Errorf("stats.Accepted = %d, want 5", stats.Accepted)
+	}
+	if stats.OutOfOrder != 3 {
+		t.Errorf("stats.OutOfOrder = %d, want 3", stats.OutOfOrder)
+	}
+	if stats.Deduplicated != 0 {
+		t.Errorf("stats.Deduplicated = %d, want 0", stats.Deduplicated)
+	}
+}
+
 // Tests that when in HA mode both origins are up after a recovery period even if one origin is down on initial connection
 func TestClient_StreamHA_OneOriginDownRecovery(t *testing.T) {
 	connectAttempts := &atomic.Uint64{}

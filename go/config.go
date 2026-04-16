@@ -15,6 +15,7 @@ type Config struct {
 	WsURL              string                        // Websocket Api url
 	wsURL              *url.URL                      // Websocket Api url
 	WsHA               bool                          // Use concurrent connections to multiple Streams servers
+	WsAllowOutOfOrder  bool                          // Allow out-of-order reports through while still deduplicating HA duplicates
 	WsMaxReconnect     int                           // Maximum number of reconnection attempts for Stream underlying connections
 	LogDebug           bool                          // Log debug information
 	InsecureSkipVerify bool                          // Skip server certificate chain and host name verification

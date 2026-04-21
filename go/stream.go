@@ -132,13 +132,14 @@ func (c *client) newStream(ctx context.Context, httpClient *http.Client, feedIDs
 				c.config.logInfo("client: failed to connect to origin %s: %s", origins[x], err)
 				errs = append(errs, fmt.Errorf("origin %s: %w", origins[x], err))
 				// Retry connecting to the origin in the background
+				localS := s // stable *stream for retry goroutine (named return s would become nil)
 				go func() {
-					conn, err := s.newWSconnWithRetry(origins[x])
+					conn, err := localS.newWSconnWithRetry(origins[x])
 					if err != nil {
 						return
 					}
-					go s.monitorConn(conn)
-					s.conns = append(s.conns, conn)
+					go localS.monitorConn(conn)
+					localS.conns = append(localS.conns, conn)
 				}()
 				continue
 			}

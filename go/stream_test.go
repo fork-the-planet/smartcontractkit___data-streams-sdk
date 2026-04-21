@@ -801,6 +801,41 @@ func TestClient_StreamHA_OneOriginDown(t *testing.T) {
 
 }
 
+// TestClient_StreamHA_AllOriginsFailInitialConnect covers HA mode when every origin
+// rejects the WebSocket: newStream spawns retry goroutines then returns an error.
+// Those goroutines must not close over the named result *stream (which becomes nil
+// on return), or the first newWSconnWithRetry iteration panics on s.closed.Load().
+func TestClient_StreamHA_AllOriginsFailInitialConnect(t *testing.T) {
+	ms := newMockServer(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead {
+			w.Header().Add(cllAvailOriginsHeader, "{001,002}")
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		if r.URL.Path != apiV2WS {
+			return
+		}
+		w.WriteHeader(http.StatusForbidden)
+	})
+	defer ms.Close()
+
+	streamsClient, err := ms.Client()
+	if err != nil {
+		t.Fatalf("error creating client %s", err)
+	}
+
+	cc := streamsClient.(*client)
+	cc.config.WsHA = true
+
+	_, err = streamsClient.Stream(context.Background(), []feed.ID{feed1})
+	if err == nil {
+		t.Fatal("expected Stream error when every origin rejects the websocket")
+	}
+
+	// Allow retry goroutines to run; a nil *stream receiver would fault immediately.
+	time.Sleep(300 * time.Millisecond)
+}
+
 func TestClient_StreamOutOfOrder(t *testing.T) {
 	reports := []*ReportResponse{
 		{FeedID: feed1, ObservationsTimestamp: time.Unix(100, 0)},

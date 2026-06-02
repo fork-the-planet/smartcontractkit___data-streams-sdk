@@ -20,8 +20,8 @@ Add the following to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-chainlink-data-streams-report = "1.2.1"
-chainlink-data-streams-sdk = { version = "1.2.1", features = ["full"] }
+chainlink-data-streams-report = "1.2.2"
+chainlink-data-streams-sdk = { version = "1.2.2", features = ["full"] }
 ```
 
 #### Features
@@ -110,8 +110,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let api_key = "YOUR_API_KEY_GOES_HERE";
     let user_secret = "YOUR_USER_SECRET_GOES_HERE";
-    let rest_url = "https://api.testnet-dataengine.chain.link";
-    let ws_url = "wss://ws.testnet-dataengine.chain.link";
+    let rest_url = "https://api.dataengine.chain.link";
+    let ws_url = "wss://ws.dataengine.chain.link";
 
     let eth_usd_feed_id =
         ID::from_hex_str("0x000359843a543ee2fe414dc14c7e7920ef10f4372990b79d6361cdc0dd1ba782")

@@ -24,6 +24,7 @@ use tracing::{error, info, warn};
 
 pub(crate) async fn run_stream(
     mut stream: TungsteniteWebSocketStream<MaybeTlsStream<TcpStream>>,
+    origin: String,   // X-Cll-Origin value for this connection; empty = non-HA
     report_sender: mpsc::Sender<WebSocketReport>,
     mut shutdown_receiver: broadcast::Receiver<()>,
     stats: Arc<Stats>,
@@ -92,7 +93,7 @@ pub(crate) async fn run_stream(
                         error!("Error receiving message: {:?}", e);
                         stats.active_connections.fetch_sub(1, Ordering::SeqCst);
 
-                        stream = handle_reconnection(stats.clone(), &config, &feed_ids).await?;
+                        stream = handle_reconnection(stats.clone(), &config, &origin, &feed_ids).await?;
                     }
                     None => {
                         info!("WebSocket stream closed.");
@@ -102,7 +103,7 @@ pub(crate) async fn run_stream(
                             info!("Stream closed gracefully after shutdown signal.");
                             return Ok(());
                         } else {
-                            stream = handle_reconnection(stats.clone(), &config, &feed_ids).await?;
+                            stream = handle_reconnection(stats.clone(), &config, &origin, &feed_ids).await?;
                         }
                     }
                 }
@@ -126,6 +127,7 @@ pub(crate) async fn run_stream(
 async fn handle_reconnection(
     stats: Arc<Stats>,
     config: &Config,
+    origin: &str,    // X-Cll-Origin value; passed through to try_to_reconnect
     feed_ids: &[ID],
 ) -> Result<TungsteniteWebSocketStream<MaybeTlsStream<TcpStream>>, StreamError> {
     if stats.active_connections.load(Ordering::SeqCst) == 0 {
@@ -134,6 +136,6 @@ async fn handle_reconnection(
         stats.partial_reconnects.fetch_add(1, Ordering::SeqCst);
     }
 
-    let new_stream = try_to_reconnect(stats.clone(), config, feed_ids).await?;
+    let new_stream = try_to_reconnect(stats.clone(), config, origin, feed_ids).await?;
     Ok(new_stream)
 }

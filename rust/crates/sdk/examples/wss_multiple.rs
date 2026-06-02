@@ -14,14 +14,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let api_key = "YOUR_API_KEY_GOES_HERE";
     let user_secret = "YOUR_USER_SECRET_GOES_HERE";
-    let rest_url = "https://api.testnet-dataengine.chain.link";
-    let ws_url = "wss://ws.testnet-dataengine.chain.link,wss://ws.testnet-dataengine.chain.link";
+    let rest_url = "https://api.dataengine.chain.link";
+    let ws_url = "wss://ws.dataengine.chain.link";
 
     let eth_usd_feed_id =
-        ID::from_hex_str("0x000359843a543ee2fe414dc14c7e7920ef10f4372990b79d6361cdc0dd1ba782")
+        ID::from_hex_str("0x000362205e10b3a147d02792eccee483dca6c7b44ecce7012cb8c6e0b68b3ae9")
             .unwrap();
     let btc_usd_feed_id: ID =
-        ID::from_hex_str("0x00037da06d56d083fe599397a4769a042d63aa73dc4ef57709d31e9971a5b439")
+        ID::from_hex_str("0x00039d9e45394f473ab1f050a1b963e6b05351e52d71e507509ada0c95ed75b8")
             .unwrap();
 
     let feed_ids = vec![eth_usd_feed_id, btc_usd_feed_id];

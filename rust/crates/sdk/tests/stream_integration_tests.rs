@@ -19,11 +19,15 @@ async fn prepare_scenario() -> (MockWebSocketServer, Stream, Vec<u8>) {
     let mock_server_address = "127.0.0.1:0";
     let mock_server = MockWebSocketServer::new(mock_server_address).await;
 
-    let origins = repeat(format!("ws://{}", mock_server.address()))
-        .take(NUMBER_OF_CONNECTIONS)
-        .collect::<Vec<String>>();
+    let ws_url = format!("ws://{}", mock_server.address());
 
-    let ws_url = origins.join(",");
+    // Configure mock server to return N origins in HEAD response (all pointing to same mock).
+    // In production these would be distinct backends; in tests we use the same address
+    // to validate deduplication, reconnect, and HA connection-count behavior.
+    let origins: Vec<String> = repeat(ws_url.clone())
+        .take(NUMBER_OF_CONNECTIONS)
+        .collect();
+    mock_server.set_ha_origins(origins).await;
 
     let config = Config::new(
         "mock_key".to_string(),

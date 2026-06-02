@@ -264,6 +264,59 @@ async fn test_stream_ha_reconnect_merge() {
 }
 
 #[tokio::test]
+async fn test_stream_ha_x_cll_origin_header() {
+    let mock_server = MockWebSocketServer::new("127.0.0.1:0").await;
+    let ws_url = format!("ws://{}", mock_server.address());
+
+    // Use distinct opaque origin IDs matching the real protocol format (e.g. {001,002}).
+    mock_server
+        .set_ha_origins(vec!["001".to_string(), "002".to_string()])
+        .await;
+
+    let config = Config::new(
+        "mock_key".to_string(),
+        "mock_secret".to_string(),
+        "mock_rest_url".to_string(),
+        ws_url,
+    )
+    .with_ws_ha(WebSocketHighAvailability::Enabled)
+    .with_ws_max_reconnect(MAX_RECONNECT_ATTEMPTS)
+    .build()
+    .expect("Failed to build config");
+
+    let mut stream = Stream::new(&config, vec![])
+        .await
+        .expect("Failed to create stream");
+
+    stream.listen().await.expect("Failed to start listening");
+
+    // Allow time for both WebSocket connections to be established.
+    sleep(Duration::from_millis(500)).await;
+
+    let received = mock_server.get_received_cll_origins().await;
+
+    // Assert 1: X-Cll-Origin header is present on every HA WebSocket connection.
+    assert_eq!(received.len(), 2, "Expected 2 WebSocket connections in HA mode");
+    for origin in &received {
+        assert!(
+            origin.is_some(),
+            "X-Cll-Origin header was missing on a WebSocket connection"
+        );
+    }
+
+    // Assert 2: The server sees distinct origin values matching the configured origins.
+    let mut actual: Vec<String> = received.into_iter().flatten().collect();
+    actual.sort();
+    assert_eq!(
+        actual,
+        vec!["001".to_string(), "002".to_string()],
+        "X-Cll-Origin header values did not match the configured origins"
+    );
+
+    stream.close().await.expect("Failed to close stream");
+}
+
+#[tokio::test]
 #[ignore] // Ignored because it takes a while to complete. To run it, use this command: cargo test -- --ignored
 async fn test_stream_ha_max_reconnection_attempts() {
     // Monitor client behavior.

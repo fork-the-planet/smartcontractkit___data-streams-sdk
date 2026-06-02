@@ -400,36 +400,20 @@ mod tests {
 
     #[test]
     fn test_parse_origins_from_header_with_braces() {
-        let result = parse_origins_from_header(
-            "{wss://ws1.dataengine.chain.link,wss://ws2.dataengine.chain.link}",
-        );
-        assert_eq!(
-            result,
-            vec![
-                "wss://ws1.dataengine.chain.link".to_string(),
-                "wss://ws2.dataengine.chain.link".to_string(),
-            ]
-        );
+        let result = parse_origins_from_header("{001,002}");
+        assert_eq!(result, vec!["001".to_string(), "002".to_string()]);
     }
 
     #[test]
     fn test_parse_origins_from_header_without_braces() {
-        let result = parse_origins_from_header(
-            "wss://ws1.dataengine.chain.link,wss://ws2.dataengine.chain.link",
-        );
-        assert_eq!(
-            result,
-            vec![
-                "wss://ws1.dataengine.chain.link".to_string(),
-                "wss://ws2.dataengine.chain.link".to_string(),
-            ]
-        );
+        let result = parse_origins_from_header("001,002");
+        assert_eq!(result, vec!["001".to_string(), "002".to_string()]);
     }
 
     #[test]
     fn test_parse_origins_from_header_single_origin() {
-        let result = parse_origins_from_header("{wss://ws1.dataengine.chain.link}");
-        assert_eq!(result, vec!["wss://ws1.dataengine.chain.link".to_string()]);
+        let result = parse_origins_from_header("{001}");
+        assert_eq!(result, vec!["001".to_string()]);
     }
 
     #[test]

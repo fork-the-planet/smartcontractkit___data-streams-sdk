@@ -19,11 +19,9 @@ impl CtxKey {
 }
 
 /// HTTP Header constants using `HeaderName` with `OnceLock` for lazy initialization
-#[allow(dead_code)] // Currently unused
 static CLL_AVAIL_ORIGINS_HEADER: OnceLock<HeaderName> = OnceLock::new();
-#[allow(dead_code)] // Currently unused
 static CLL_ORIGIN_HEADER: OnceLock<HeaderName> = OnceLock::new();
-#[allow(dead_code)] // Currently unused
+#[allow(dead_code)]
 static CLL_INT_HEADER: OnceLock<HeaderName> = OnceLock::new();
 static AUTHZ_HEADER: OnceLock<HeaderName> = OnceLock::new();
 static AUTHZ_TS_HEADER: OnceLock<HeaderName> = OnceLock::new();
@@ -33,7 +31,6 @@ static HOST_HEADER: OnceLock<HeaderName> = OnceLock::new();
 
 /// Functions to retrieve header constants, initializing them on first access
 
-#[allow(dead_code)] // Currently unused
 /// "X-Cll-Available-Origins"
 pub fn get_cll_avail_origins_header() -> &'static HeaderName {
     CLL_AVAIL_ORIGINS_HEADER.get_or_init(|| {
@@ -42,7 +39,6 @@ pub fn get_cll_avail_origins_header() -> &'static HeaderName {
     })
 }
 
-#[allow(dead_code)] // Currently unused
 /// "X-Cll-Origin"
 pub fn get_cll_origin_header() -> &'static HeaderName {
     CLL_ORIGIN_HEADER.get_or_init(|| {
@@ -50,8 +46,8 @@ pub fn get_cll_origin_header() -> &'static HeaderName {
     })
 }
 
-#[allow(dead_code)] // Currently unused
 /// "X-Cll-Eng-Int"
+#[allow(dead_code)]
 pub fn get_cll_int_header() -> &'static HeaderName {
     CLL_INT_HEADER.get_or_init(|| {
         HeaderName::from_str("X-Cll-Eng-Int").expect("Invalid header name: X-Cll-Eng-Int")
@@ -85,4 +81,21 @@ pub fn get_authz_sig_header() -> &'static HeaderName {
 /// "Host"
 pub fn get_host_header() -> &'static HeaderName {
     HOST_HEADER.get_or_init(|| HeaderName::from_str("Host").expect("Invalid header name: Host"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_cll_origin_header_name() {
+        let h = get_cll_origin_header();
+        assert_eq!(h.as_str(), "x-cll-origin");
+    }
+
+    #[test]
+    fn test_cll_avail_origins_header_name() {
+        let h = get_cll_avail_origins_header();
+        assert_eq!(h.as_str(), "x-cll-available-origins");
+    }
 }

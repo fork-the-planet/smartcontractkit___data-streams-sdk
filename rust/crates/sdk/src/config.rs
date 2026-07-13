@@ -112,13 +112,13 @@ impl Config {
     ///    .build()?;
     ///
     ///    // If you want to customize the configuration further, use the builder pattern
-    ///    let ws_urls_multiple = "wss://api.testnet-dataengine.chain.link/ws,wss://api.testnet-dataengine.chain.link/ws";
-    ///
+    ///    // In HA mode, provide a single WebSocket URL — origins are discovered automatically
+    ///    // via a HEAD request to the server (X-Cll-Available-Origins header).
     ///    let config_custom = Config::new(
     ///        api_key.to_string(),
     ///        user_secret.to_string(),
     ///        rest_url.to_string(),
-    ///        ws_urls_multiple.to_string(),
+    ///        ws_url.to_string(),
     ///    )
     ///    .with_ws_ha(WebSocketHighAvailability::Enabled) // Enable WebSocket High Availability Mode
     ///    .with_ws_max_reconnect(10) // Set maximum reconnection attempts to 10, instead of the default 5.

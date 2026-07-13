@@ -3,7 +3,7 @@ use super::{Stats, StreamError, WebSocketConnection};
 use crate::{
     auth::generate_auth_headers,
     config::{Config, WebSocketHighAvailability},
-    endpoints::API_V1_WS,
+    endpoints::{get_cll_origin_header, API_V1_WS},
     stream::{DEFAULT_WS_CONNECT_TIMEOUT, MAX_WS_RECONNECT_INTERVAL, MIN_WS_RECONNECT_INTERVAL},
 };
 
@@ -23,20 +23,13 @@ use tokio_tungstenite::{
 };
 use tracing::{error, info};
 
-fn parse_origins(ws_url: &str) -> Vec<String> {
-    ws_url
-        .split(',')
-        .map(|url| url.trim().to_string())
-        .collect()
-}
-
 async fn connect_to_origin(
     config: &Config,
-    origin: &str,
+    cll_origin: &str, // X-Cll-Origin header value; empty string = no header
     feed_ids: &[ID],
 ) -> Result<TungsteniteWebSocketStream<MaybeTlsStream<TcpStream>>, StreamError> {
-    let feed_ids: Vec<String> = feed_ids.iter().map(|id| id.to_hex_string()).collect();
-    let feed_ids_joined = feed_ids.join(",");
+    let feed_ids_str: Vec<String> = feed_ids.iter().map(|id| id.to_hex_string()).collect();
+    let feed_ids_joined = feed_ids_str.join(",");
 
     let method = "GET";
     let path = format!("{}?feedIDs={}", API_V1_WS, feed_ids_joined.as_str());
@@ -48,7 +41,7 @@ async fn connect_to_origin(
         .expect("System time error")
         .as_millis();
 
-    let headers = generate_auth_headers(
+    let mut headers = generate_auth_headers(
         method,
         &path,
         body,
@@ -57,7 +50,17 @@ async fn connect_to_origin(
         request_timestamp,
     )?;
 
-    let url = format!("{}{}", origin, path);
+    if !cll_origin.is_empty() {
+        headers.insert(
+            get_cll_origin_header(),
+            reqwest::header::HeaderValue::from_str(cll_origin).map_err(|e| {
+                StreamError::ConnectionError(format!("Invalid X-Cll-Origin header value: {}", e))
+            })?,
+        );
+    }
+
+    // Always connect to config.ws_url — cll_origin is a routing hint header, not a URL
+    let url = format!("{}{}", config.ws_url, path);
     let mut request = url.into_client_request().map_err(|e| {
         StreamError::ConnectionError(format!("Failed to create client request: {}", e))
     })?;
@@ -77,18 +80,21 @@ async fn connect_to_origin(
 
 pub(crate) async fn connect(
     config: &Config,
+    origins: &[String], // empty = single non-HA connection; populated = HA mode
     feed_ids: &[ID],
     stats: Arc<Stats>,
 ) -> Result<WebSocketConnection, StreamError> {
-    let origins = parse_origins(&config.ws_url);
+    if config.ws_ha == WebSocketHighAvailability::Enabled && origins.len() == 1 {
+        info!("HA mode enabled but only 1 origin discovered; connection will not be redundant");
+    }
 
-    if config.ws_ha == WebSocketHighAvailability::Enabled && origins.len() > 1 {
+    if config.ws_ha == WebSocketHighAvailability::Enabled && !origins.is_empty() {
         let mut streams = Vec::new();
 
         for origin in origins {
-            match connect_to_origin(config, &origin, feed_ids).await {
+            match connect_to_origin(config, origin, feed_ids).await {
                 Ok(stream) => {
-                    streams.push(stream);
+                    streams.push((stream, origin.clone()));
                     stats.configured_connections.fetch_add(1, Ordering::SeqCst);
                     stats.active_connections.fetch_add(1, Ordering::SeqCst);
                 }
@@ -100,20 +106,15 @@ pub(crate) async fn connect(
 
         if streams.is_empty() {
             return Err(StreamError::ConnectionError(
-                "Failed to connect to any WebSocket origins".into(),
+                "Failed to connect to any WebSocket origins in HA mode".into(),
             ));
         }
 
         Ok(WebSocketConnection::Multiple(streams))
     } else {
-        let origin = origins.first().ok_or_else(|| {
-            StreamError::ConnectionError("No WebSocket origin found in config".into())
-        })?;
-
-        let stream = connect_to_origin(config, origin, feed_ids).await?;
+        let stream = connect_to_origin(config, "", feed_ids).await?;
         stats.configured_connections.fetch_add(1, Ordering::SeqCst);
         stats.active_connections.fetch_add(1, Ordering::SeqCst);
-
         Ok(WebSocketConnection::Single(stream))
     }
 }
@@ -121,15 +122,15 @@ pub(crate) async fn connect(
 pub(crate) async fn try_to_reconnect(
     stats: Arc<Stats>,
     config: &Config,
+    origin: &str, // the X-Cll-Origin header value for this connection (empty = non-HA)
     feed_ids: &[ID],
 ) -> Result<TungsteniteWebSocketStream<MaybeTlsStream<TcpStream>>, StreamError> {
     let mut reconnect_attempts = 0;
     let max_reconnect_attempts = config.ws_max_reconnect;
-    let origin = config.ws_url.split(',').next().unwrap();
     let mut backoff = MIN_WS_RECONNECT_INTERVAL;
 
     loop {
-        info!("Attempting to reconnect to origin: {}", origin);
+        info!("Attempting to reconnect (origin: {})", origin);
         reconnect_attempts += 1;
         match connect_to_origin(config, origin, feed_ids).await {
             Ok(new_stream) => {
@@ -150,7 +151,6 @@ pub(crate) async fn try_to_reconnect(
                 }
 
                 error!("Retrying in {:?}.", backoff);
-
                 sleep(backoff).await;
                 backoff = (backoff * 2).min(MAX_WS_RECONNECT_INTERVAL);
             }

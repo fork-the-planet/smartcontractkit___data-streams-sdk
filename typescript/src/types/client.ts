@@ -129,6 +129,17 @@ export interface Config {
   haMode?: boolean;
 
   /**
+   * Allow out-of-order reports through while still deduplicating HA duplicates.
+   *
+   * When false (default), any report with timestamp <= watermark is dropped.
+   * When true, only exact-timestamp matches are deduplicated; out-of-order
+   * reports (older but distinct timestamps) are delivered.
+   *
+   * @default false
+   */
+  wsAllowOutOfOrder?: boolean;
+
+  /**
    * Connection timeout for individual WebSocket connections in HA mode (milliseconds).
    *
    * @default 10000

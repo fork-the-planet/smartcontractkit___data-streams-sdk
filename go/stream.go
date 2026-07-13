@@ -12,7 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/smartcontractkit/data-streams-sdk/go/feed"
+	"github.com/smartcontractkit/data-streams-sdk/go/v2/feed"
 	"nhooyr.io/websocket"
 )
 
@@ -54,6 +54,7 @@ type Stream interface {
 type Stats struct {
 	Accepted              uint64 // Total number of accepted reports
 	Deduplicated          uint64 // Total number of deduplicated reports when in HA
+	OutOfOrder            uint64 // Total number of out-of-order reports seen
 	TotalReceived         uint64 // Total number of received reports
 	PartialReconnects     uint64 // Total number of partial reconnects when in HA
 	FullReconnects        uint64 // Total number of full reconnects
@@ -63,8 +64,8 @@ type Stats struct {
 
 func (s Stats) String() (st string) {
 	return fmt.Sprintf(
-		"accepted: %d, deduplicated: %d, total_received %d, partial_reconnects: %d, full_reconnects: %d, configured_connections: %d, active_connections %d",
-		s.Accepted, s.Deduplicated,
+		"accepted: %d, deduplicated: %d, out_of_order: %d, total_received %d, partial_reconnects: %d, full_reconnects: %d, configured_connections: %d, active_connections %d",
+		s.Accepted, s.Deduplicated, s.OutOfOrder,
 		s.TotalReceived, s.PartialReconnects,
 		s.FullReconnects, s.ConfiguredConnections, s.ActiveConnections,
 	)
@@ -82,12 +83,12 @@ type stream struct {
 	closeError         atomic.Value
 	connStatusCallback func(isConneccted bool, host string, origin string)
 
-	waterMarkMu sync.Mutex
-	waterMark   map[string]uint64
+	dedup *FeedDeduplicator
 
 	stats struct {
 		accepted              atomic.Uint64
 		skipped               atomic.Uint64
+		outOfOrder            atomic.Uint64
 		partialReconnects     atomic.Uint64
 		fullReconnects        atomic.Uint64
 		activeConnections     atomic.Uint64
@@ -107,7 +108,7 @@ func (c *client) newStream(ctx context.Context, httpClient *http.Client, feedIDs
 		config:             c.config,
 		output:             make(chan *ReportResponse, 1),
 		feedIDs:            feedIDs,
-		waterMark:          make(map[string]uint64),
+		dedup:              NewFeedDeduplicator(),
 		streamCtx:          streamCtx,
 		streamCtxCancel:    streamCtxCancel,
 	}
@@ -131,13 +132,14 @@ func (c *client) newStream(ctx context.Context, httpClient *http.Client, feedIDs
 				c.config.logInfo("client: failed to connect to origin %s: %s", origins[x], err)
 				errs = append(errs, fmt.Errorf("origin %s: %w", origins[x], err))
 				// Retry connecting to the origin in the background
+				localS := s // stable *stream for retry goroutine (named return s would become nil)
 				go func() {
-					conn, err := s.newWSconnWithRetry(origins[x])
+					conn, err := localS.newWSconnWithRetry(origins[x])
 					if err != nil {
 						return
 					}
-					go s.monitorConn(conn)
-					s.conns = append(s.conns, conn)
+					go localS.monitorConn(conn)
+					localS.conns = append(localS.conns, conn)
 				}()
 				continue
 			}
@@ -173,24 +175,30 @@ func (s *stream) pingConn(ctx context.Context, conn *wsConn) {
 	for {
 		select {
 		case <-ctx.Done():
+			s.config.logDebug("client: stream websocket %s ping loop exiting: context done", conn.origin)
 			return
 
 		case <-ticker.C:
+			pingStart := time.Now()
 			pctx, pcancel := context.WithTimeout(context.Background(), 2*time.Second)
 			err := conn.conn.Ping(pctx)
 			pcancel()
+			pingDuration := time.Since(pingStart)
 
 			if s.closed.Load() {
+				s.config.logDebug("client: stream websocket %s ping loop exiting: stream closed", conn.origin)
 				return
 			}
 
 			if err != nil {
 				s.config.logInfo(
-					"client: stream websocket %s ping error: %s, closing client: %s",
-					conn.origin, err, conn.close(),
+					"client: stream websocket %s ping FAILED after %v: %s, closing connection: %s",
+					conn.origin, pingDuration, err, conn.close(),
 				)
 				return
 			}
+
+			s.config.logDebug("client: stream websocket %s ping OK (took %v)", conn.origin, pingDuration)
 		}
 	}
 }
@@ -304,6 +312,7 @@ func (s *stream) newWSconnWithRetry(origin string) (conn *wsConn, err error) {
 func (s *stream) Stats() (st Stats) {
 	st.Accepted = s.stats.accepted.Load()
 	st.Deduplicated = s.stats.skipped.Load()
+	st.OutOfOrder = s.stats.outOfOrder.Load()
 	st.TotalReceived = st.Accepted + st.Deduplicated
 	st.PartialReconnects = s.stats.partialReconnects.Load()
 	st.FullReconnects = s.stats.fullReconnects.Load()
@@ -352,18 +361,28 @@ func (s *stream) Close() (err error) {
 }
 
 func (s *stream) accept(ctx context.Context, m *message) (err error) {
-	id := m.Report.FeedID.String()
-
-	s.waterMarkMu.Lock()
-	if s.waterMark[id] >= m.Report.ObservationsTimestamp {
-		s.stats.skipped.Add(1)
-		s.waterMarkMu.Unlock()
+	if m.Report == nil {
 		return nil
 	}
 
+	id := m.Report.FeedID.String()
+	ts := m.Report.ObservationsTimestamp.UnixMilli()
+
+	verdict := s.dedup.Check(id, ts)
+
+	switch verdict {
+	case Duplicate:
+		s.stats.skipped.Add(1)
+		return nil
+	case OutOfOrder:
+		s.stats.outOfOrder.Add(1)
+		if !s.config.WsAllowOutOfOrder {
+			s.stats.skipped.Add(1)
+			return nil
+		}
+	}
+
 	s.stats.accepted.Add(1)
-	s.waterMark[id] = m.Report.ObservationsTimestamp
-	s.waterMarkMu.Unlock()
 
 	select {
 	case <-ctx.Done():
@@ -420,7 +439,7 @@ func (ws *wsConn) replace(c *websocket.Conn) {
 }
 
 func (s *stream) newWSconn(ctx context.Context, origin string) (ws *wsConn, err error) {
-	reqURL := s.config.wsURL.ResolveReference(&url.URL{Path: apiV1WS})
+	reqURL := s.config.wsURL.ResolveReference(&url.URL{Path: apiV2WS})
 	reqURL.RawQuery = url.Values{"feedIDs": {strings.Join(feedIdsToStringList(s.feedIDs), ",")}}.Encode()
 
 	headers := http.Header{}

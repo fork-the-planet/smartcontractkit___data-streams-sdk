@@ -31,6 +31,7 @@ describe("StreamStats Tests", () => {
     expect(initialStats).toEqual({
       accepted: 0,
       deduplicated: 0,
+      outOfOrder: 0,
       partialReconnects: 0,
       fullReconnects: 0,
       configuredConnections: 1, // Default is 1
@@ -147,6 +148,7 @@ describe("StreamStats Tests", () => {
     expect(finalStats).toEqual({
       accepted: 4,
       deduplicated: 2,
+      outOfOrder: 0,
       partialReconnects: 1,
       fullReconnects: 1,
       configuredConnections: 2,

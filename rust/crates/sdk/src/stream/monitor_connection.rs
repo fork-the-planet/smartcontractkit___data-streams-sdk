@@ -1,4 +1,4 @@
-use super::{Stats, StreamError, WebSocketReport};
+use super::{dedup::{FeedDeduplicator, Verdict}, Stats, StreamError, WebSocketReport};
 
 use crate::{config::Config, stream::establish_connection::try_to_reconnect};
 
@@ -6,12 +6,9 @@ use chainlink_data_streams_report::feed_id::ID;
 
 use futures::SinkExt;
 use futures_util::StreamExt;
-use std::{
-    collections::HashMap,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    },
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
 };
 use tokio::{
     net::TcpStream,
@@ -28,7 +25,7 @@ pub(crate) async fn run_stream(
     report_sender: mpsc::Sender<WebSocketReport>,
     mut shutdown_receiver: broadcast::Receiver<()>,
     stats: Arc<Stats>,
-    water_mark: Arc<Mutex<HashMap<String, usize>>>,
+    dedup: Arc<Mutex<FeedDeduplicator>>,
     config: Config,
     feed_ids: Vec<ID>,
 ) -> Result<(), StreamError> {
@@ -47,20 +44,30 @@ pub(crate) async fn run_stream(
                                 info!("Received new report from Data Streams Endpoint.");
                                 if let Ok(report) = serde_json::from_slice::<WebSocketReport>(&data) {
                                     let feed_id = report.report.feed_id.to_hex_string();
-                                    let observations_timestamp = report.report.observations_timestamp;
+                                    let ts = report.report.observations_timestamp as u64;
 
-                                    if water_mark.lock().await.contains_key(&feed_id) && water_mark.lock().await[&feed_id] >= observations_timestamp {
-                                        stats.deduplicated.fetch_add(1, Ordering::SeqCst);
-                                        continue;
+                                    let verdict = dedup.lock().await.check(&feed_id, ts);
+
+                                    match verdict {
+                                        Verdict::Duplicate => {
+                                            stats.deduplicated.fetch_add(1, Ordering::SeqCst);
+                                            continue;
+                                        }
+                                        Verdict::OutOfOrder => {
+                                            stats.out_of_order.fetch_add(1, Ordering::SeqCst);
+                                            if !config.ws_allow_out_of_order {
+                                                stats.deduplicated.fetch_add(1, Ordering::SeqCst);
+                                                continue;
+                                            }
+                                        }
+                                        Verdict::Accept => {}
                                     }
 
                                     report_sender.send(report).await.map_err(|e| {
                                         StreamError::ConnectionError(format!("Failed to send report: {}", e))
                                     })?;
 
-                                    water_mark.lock().await.insert(feed_id, observations_timestamp);
                                     stats.accepted.fetch_add(1, Ordering::SeqCst);
-
                                 } else {
                                     error!("Failed to parse binary message.");
                                 }
